@@ -1,0 +1,103 @@
+name: Dev Release
+
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            artifact: vbri-linux-x86_64
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            artifact: vbri-linux-aarch64
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            artifact: vbri-macos-x86_64
+          - target: aarch64-apple-darwin
+            os: macos-13
+            artifact: vbri-macos-aarch64
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools (Linux ARM64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Configure linker for Linux ARM64
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          mkdir -p .cargo
+          echo '[target.aarch64-unknown-linux-gnu]' >> .cargo/config.toml
+          echo 'linker = "aarch64-linux-gnu-gcc"' >> .cargo/config.toml
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Rename binary
+        run: |
+          cd target/${{ matrix.target }}/release
+          mv vbri ${{ matrix.artifact }}
+          tar czf ${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: target/${{ matrix.target }}/release/${{ matrix.artifact }}.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Generate tag name
+        id: tag
+        run: echo "name=dev-$(date +'%Y%m%d-%H%M%S')" >> "$GITHUB_OUTPUT"
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$LAST_TAG" ]; then
+            LOG=$(git log "$LAST_TAG"..HEAD --pretty=format:"- %s (%h)")
+          else
+            LOG=$(git log --pretty=format:"- %s (%h)")
+          fi
+          {
+            echo "body<<EOF"
+            echo "$LOG"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          name: Dev Build ${{ steps.tag.outputs.name }}
+          body: ${{ steps.changelog.outputs.body }}
+          prerelease: true
+          files: artifacts/**/*.tar.gz
