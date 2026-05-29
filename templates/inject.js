@@ -30,7 +30,7 @@ const originalFetch = globalThis.fetch
 function sendToRustService(requestBody) {
   return new Promise((resolve, reject) => {
     const client = net.createConnection(SOCKET_PATH, () => {
-      client.write(JSON.stringify(requestBody))
+      client.end(JSON.stringify(requestBody))
     })
 
     let data = ''
